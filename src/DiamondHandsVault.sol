@@ -2,33 +2,37 @@
 pragma solidity 0.8.34;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {IWstETH} from "./interfaces/IWstETH.sol";
 import {IStETH} from "./interfaces/IStETH.sol";
 
 /// @title DiamondHandsVault
+/// @author Defied.cc
 /// @notice A vault that locks ETH (as wstETH) until the ETH price reaches a specified all-time high.
 /// @dev Deposited ETH is staked via Lido (stETH) and wrapped into wstETH to earn staking rewards.
 ///      Withdrawals before the all-time high is reached incur an early exit fee.
 contract DiamondHandsVault {
-    /// @notice Lido wrapped stETH contract address on Ethereum mainnet.
-    address constant wstETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+    using SafeERC20 for IERC20;
 
-    /// @notice Lido stETH contract address on Ethereum mainnet.
-    address constant stETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
+    /// @notice Lido wrapped stETH contract address.
+    address public immutable wstETH;
 
-    /// @notice Chainlink ETH/USD price feed address on Ethereum mainnet.
-    address constant priceFeed = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+    /// @notice Lido stETH contract address.
+    address public immutable stETH;
+
+    /// @notice Chainlink ETH/USD price feed address.
+    address public immutable priceFeed;
 
     /// @notice The ETH price target that must be reached to unlock fee-free withdrawals.
-    uint256 public allTimeHigh;
+    uint256 public immutable allTimeHigh;
 
     /// @notice The early exit fee in basis points (1 bps = 0.01%).
-    uint256 public earlyExitFeeBps;
+    uint256 public immutable earlyExitFeeBps;
 
     /// @notice The address that receives early exit fees.
-    address public exitFeeRecipient;
+    address public immutable exitFeeRecipient;
 
     /// @notice Whether the ETH price all-time high target has been reached.
     bool public allTimeHighReached;
@@ -42,11 +46,11 @@ contract DiamondHandsVault {
     /// @notice Emitted when ETH is deposited and wrapped into wstETH.
     /// @param ethAmount The amount of ETH deposited.
     /// @param wstETHAmount The amount of wstETH received after wrapping.
-    event ETHDepoisted(uint256 ethAmount, uint256 wstETHAmount);
+    event ETHDeposited(address depositor, uint256 ethAmount, uint256 wstETHAmount);
 
     /// @notice Emitted when a user withdraws their wstETH balance.
     /// @param wstETHAmount The amount of wstETH transferred to the user.
-    event ETHWithdrawn(uint256 wstETHAmount);
+    event ETHWithdrawn(address depositor, uint256 wstETHAmount);
 
     /// @notice Emitted when the ETH price all-time high target is reached.
     /// @param newAllTimeHigh The ETH price that met or exceeded the target.
@@ -68,15 +72,28 @@ contract DiamondHandsVault {
     /// @param _allTimeHigh The ETH price target (in Chainlink 8-decimal format) to unlock fee-free withdrawals.
     /// @param _earlyExitFeeBps The early exit fee in basis points.
     /// @param _exitFeeRecipient The address that receives early exit fees.
-    constructor(uint256 _allTimeHigh, uint256 _earlyExitFeeBps, address _exitFeeRecipient) {
+    /// @param _wstETH The Lido wrapped stETH contract address.
+    /// @param _stETH The Lido stETH contract address.
+    /// @param _priceFeed The Chainlink ETH/USD price feed address.
+    constructor(
+        uint256 _allTimeHigh,
+        uint256 _earlyExitFeeBps,
+        address _exitFeeRecipient,
+        address _wstETH,
+        address _stETH,
+        address _priceFeed
+    ) {
         allTimeHigh = _allTimeHigh;
         earlyExitFeeBps = _earlyExitFeeBps;
         exitFeeRecipient = _exitFeeRecipient;
+        wstETH = _wstETH;
+        stETH = _stETH;
+        priceFeed = _priceFeed;
     }
 
     /// @notice Allows the contract to receive ETH and automatically deposits it.
     receive() external payable {
-        deposit(msg.value);
+        deposit();
     }
 
     /// @notice Withdraws the caller's entire wstETH balance from the vault.
@@ -99,13 +116,13 @@ contract DiamondHandsVault {
         }
 
         if (earlyExitFeeAmount > 0) {
-            IERC20(wstETH).transfer(exitFeeRecipient, earlyExitFeeAmount);
+            IERC20(wstETH).safeTransfer(exitFeeRecipient, earlyExitFeeAmount);
         }
         if (userAmountToReceive > 0) {
-            IERC20(wstETH).transfer(msg.sender, userAmountToReceive);
+            IERC20(wstETH).safeTransfer(msg.sender, userAmountToReceive);
         }
 
-        emit ETHWithdrawn(userAmountToReceive);
+        emit ETHWithdrawn(msg.sender, userAmountToReceive);
     }
 
     /// @notice Checks the current ETH price and, if it meets or exceeds the target, unlocks fee-free withdrawals.
@@ -125,12 +142,13 @@ contract DiamondHandsVault {
 
     /// @notice Deposits ETH into the vault by staking it via Lido and wrapping into wstETH.
     /// @dev The `amount` parameter must equal `msg.value`. Deposits are blocked once the all-time high is reached.
-    /// @param amount The amount of ETH to deposit (must equal msg.value).
-    function deposit(uint256 amount) public payable {
-        if (amount != msg.value) revert InvalidDepositAmount();
+    ///      ETH is submitted to Lido for stETH shares, converted to the underlying stETH amount, then wrapped into wstETH.
+    function deposit() public payable {
+        if (msg.value == 0) revert InvalidDepositAmount();
         if (allTimeHighReached) revert AllTimeHighReached();
 
-        uint256 stETHAmount = IStETH(stETH).submit{value: msg.value}(address(this));
+        uint256 shares = IStETH(stETH).submit{value: msg.value}(address(this));
+        uint256 stETHAmount = IStETH(stETH).getPooledEthByShares(shares);
 
         IERC20(stETH).approve(wstETH, stETHAmount);
 
@@ -140,7 +158,7 @@ contract DiamondHandsVault {
 
         wstETHdeposited += wstETHAmount;
 
-        emit ETHDepoisted(amount, wstETHAmount);
+        emit ETHDeposited(msg.sender, msg.value, wstETHAmount);
     }
 
     /// @notice Fetches the latest ETH/USD price from the Chainlink oracle.
