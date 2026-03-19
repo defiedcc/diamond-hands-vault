@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.34;
+
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {IWstETH} from "./interfaces/IWstETH.sol";
+import {IStETH} from "./interfaces/IStETH.sol";
+
+/// @title DiamondHandsVault
+/// @notice A vault that locks ETH (as wstETH) until the ETH price reaches a specified all-time high.
+/// @dev Deposited ETH is staked via Lido (stETH) and wrapped into wstETH to earn staking rewards.
+///      Withdrawals before the all-time high is reached incur an early exit fee.
+contract DiamondHandsVault {
+    /// @notice Lido wrapped stETH contract address on Ethereum mainnet.
+    address constant wstETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+
+    /// @notice Lido stETH contract address on Ethereum mainnet.
+    address constant stETH = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84;
+
+    /// @notice Chainlink ETH/USD price feed address on Ethereum mainnet.
+    address constant priceFeed = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+
+    /// @notice The ETH price target that must be reached to unlock fee-free withdrawals.
+    uint256 public allTimeHigh;
+
+    /// @notice The early exit fee in basis points (1 bps = 0.01%).
+    uint256 public earlyExitFeeBps;
+
+    /// @notice The address that receives early exit fees.
+    address public exitFeeRecipient;
+
+    /// @notice Whether the ETH price all-time high target has been reached.
+    bool public allTimeHighReached;
+
+    /// @notice The total amount of wstETH deposited in the vault.
+    uint256 public wstETHdeposited;
+
+    /// @notice The wstETH balance of each depositor.
+    mapping(address => uint256) public wstETHbalance;
+
+    /// @notice Emitted when ETH is deposited and wrapped into wstETH.
+    /// @param ethAmount The amount of ETH deposited.
+    /// @param wstETHAmount The amount of wstETH received after wrapping.
+    event ETHDepoisted(uint256 ethAmount, uint256 wstETHAmount);
+
+    /// @notice Emitted when a user withdraws their wstETH balance.
+    /// @param wstETHAmount The amount of wstETH transferred to the user.
+    event ETHWithdrawn(uint256 wstETHAmount);
+
+    /// @notice Emitted when the ETH price all-time high target is reached.
+    /// @param newAllTimeHigh The ETH price that met or exceeded the target.
+    event ETHAllTimeHighReached(uint256 newAllTimeHigh);
+
+    /// @notice Thrown when the deposit amount does not match `msg.value`.
+    error InvalidDepositAmount();
+
+    /// @notice Thrown when a user attempts to withdraw with a zero balance.
+    error InvalidWithdawAmount();
+
+    /// @notice Thrown when a deposit is attempted after the all-time high has been reached.
+    error AllTimeHighReached();
+
+    /// @notice Thrown when `notifyAllTimeHigh` is called but the price has not reached the target.
+    error AllTimeHighNotReached();
+
+    /// @notice Initializes the vault with the target price, exit fee, and fee recipient.
+    /// @param _allTimeHigh The ETH price target (in Chainlink 8-decimal format) to unlock fee-free withdrawals.
+    /// @param _earlyExitFeeBps The early exit fee in basis points.
+    /// @param _exitFeeRecipient The address that receives early exit fees.
+    constructor(uint256 _allTimeHigh, uint256 _earlyExitFeeBps, address _exitFeeRecipient) {
+        allTimeHigh = _allTimeHigh;
+        earlyExitFeeBps = _earlyExitFeeBps;
+        exitFeeRecipient = _exitFeeRecipient;
+    }
+
+    /// @notice Allows the contract to receive ETH and automatically deposits it.
+    receive() external payable {
+        deposit(msg.value);
+    }
+
+    /// @notice Withdraws the caller's entire wstETH balance from the vault.
+    /// @dev If the all-time high has not been reached, an early exit fee is deducted and sent to `exitFeeRecipient`.
+    ///      If the all-time high has been reached, the full balance is returned with no fee.
+    function withdraw() external {
+        uint256 userWstETHBalance = wstETHbalance[msg.sender];
+        if (userWstETHBalance == 0) revert InvalidWithdawAmount();
+        uint256 userAmountToReceive;
+        uint256 earlyExitFeeAmount;
+
+        wstETHbalance[msg.sender] = 0;
+        wstETHdeposited -= userWstETHBalance;
+
+        if (allTimeHighReached) {
+            userAmountToReceive = userWstETHBalance;
+        } else {
+            earlyExitFeeAmount = (earlyExitFeeBps * userWstETHBalance) / 10_000;
+            userAmountToReceive = userWstETHBalance - earlyExitFeeAmount;
+        }
+
+        if (earlyExitFeeAmount > 0) {
+            IERC20(wstETH).transfer(exitFeeRecipient, earlyExitFeeAmount);
+        }
+        if (userAmountToReceive > 0) {
+            IERC20(wstETH).transfer(msg.sender, userAmountToReceive);
+        }
+
+        emit ETHWithdrawn(userAmountToReceive);
+    }
+
+    /// @notice Checks the current ETH price and, if it meets or exceeds the target, unlocks fee-free withdrawals.
+    /// @dev Can be called by anyone. Once triggered, deposits are permanently disabled and withdrawals become fee-free.
+    /// @return newAllTimeHigh The current ETH price that met or exceeded the target.
+    function notifyAllTimeHigh() external returns (uint256 newAllTimeHigh) {
+        (int256 currentPrice,) = getETHPrice();
+
+        if (uint256(currentPrice) < allTimeHigh) revert AllTimeHighNotReached();
+
+        newAllTimeHigh = uint256(currentPrice);
+
+        allTimeHighReached = true;
+
+        emit ETHAllTimeHighReached(newAllTimeHigh);
+    }
+
+    /// @notice Deposits ETH into the vault by staking it via Lido and wrapping into wstETH.
+    /// @dev The `amount` parameter must equal `msg.value`. Deposits are blocked once the all-time high is reached.
+    /// @param amount The amount of ETH to deposit (must equal msg.value).
+    function deposit(uint256 amount) public payable {
+        if (amount != msg.value) revert InvalidDepositAmount();
+        if (allTimeHighReached) revert AllTimeHighReached();
+
+        uint256 stETHAmount = IStETH(stETH).submit{value: msg.value}(address(this));
+
+        IERC20(stETH).approve(wstETH, stETHAmount);
+
+        uint256 wstETHAmount = IWstETH(wstETH).wrap(stETHAmount);
+
+        wstETHbalance[msg.sender] += wstETHAmount;
+
+        wstETHdeposited += wstETHAmount;
+
+        emit ETHDepoisted(amount, wstETHAmount);
+    }
+
+    /// @notice Fetches the latest ETH/USD price from the Chainlink oracle.
+    /// @dev Reverts if the price is stale (>1 hour), non-positive, or from an incomplete round.
+    /// @return price The latest ETH/USD price (8 decimals).
+    /// @return updatedAt The timestamp of the latest price update.
+    function getETHPrice() public view returns (int256 price, uint256 updatedAt) {
+        (uint80 roundId, int256 answer,, uint256 _updatedAt, uint80 answeredInRound) =
+            AggregatorV3Interface(priceFeed).latestRoundData();
+
+        require(block.timestamp - _updatedAt <= 1 hours, "Stale price");
+
+        require(answer > 0, "Invalid price");
+        require(answeredInRound >= roundId, "Incomplete round");
+
+        return (answer, _updatedAt);
+    }
+}

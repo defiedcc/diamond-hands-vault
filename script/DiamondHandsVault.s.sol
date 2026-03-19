@@ -2,17 +2,15 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Counter} from "../src/Counter.sol";
+import {DiamondHandsVault} from "../src/DiamondHandsVault.sol";
 
 contract CounterScript is Script {
-    Counter public counter;
+    DiamondHandsVault public dhVault;
 
     function setUp() public {}
 
     function run() public {
         vm.startBroadcast();
-
-        counter = new Counter();
 
         vm.stopBroadcast();
     }
