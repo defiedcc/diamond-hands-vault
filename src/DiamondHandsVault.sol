@@ -56,8 +56,9 @@ contract DiamondHandsVault {
     event ETHDeposited(address depositor, uint256 ethAmount, uint256 wstETHAmount);
 
     /// @notice Emitted when a user withdraws their wstETH balance.
-    /// @param wstETHAmount The amount of wstETH transferred to the user.
-    event ETHWithdrawn(address depositor, uint256 wstETHAmount);
+    /// @param wstETHAmountToReceive The amount of wstETH transferred to the user (after any fee deduction).
+    /// @param exitFeeAmount The early exit fee deducted (zero if the all-time high has been reached).
+    event ETHWithdrawn(address depositor, uint256 wstETHAmountToReceive, uint256 exitFeeAmount);
 
     /// @notice Emitted when the ETH price all-time high target is reached.
     /// @param newAllTimeHigh The ETH price that met or exceeded the target.
@@ -67,13 +68,25 @@ contract DiamondHandsVault {
     error InvalidDepositAmount();
 
     /// @notice Thrown when a user attempts to withdraw with a zero balance.
-    error InvalidWithdawAmount();
+    error InvalidWithdrawAmount();
 
     /// @notice Thrown when a deposit is attempted after the all-time high has been reached.
     error AllTimeHighReached();
 
     /// @notice Thrown when `notifyAllTimeHigh` is called but the price has not reached the target.
     error AllTimeHighNotReached();
+
+    /// @notice Thrown when the contract is deployed on a chain other than Ethereum mainnet.
+    error MainnetOnlyDeployment();
+
+    /// @notice Thrown when the early exit fee exceeds the maximum of 10% (1000 bps).
+    error ExitFeeTooHigh();
+
+    /// @notice Thrown when a zero address is provided for a required address parameter.
+    error InvalidAddress();
+
+    /// @notice Thrown when a zero amount is provided for a required value parameter.
+    error InvalidAmount();
 
     /// @notice Initializes the vault with the target price, exit fee, and fee recipient.
     /// @param _allTimeHigh The ETH price target (in Chainlink 8-decimal format) to unlock fee-free withdrawals.
@@ -90,6 +103,13 @@ contract DiamondHandsVault {
         address _stETH,
         address _priceFeed
     ) {
+        if (block.chainid != 1) revert MainnetOnlyDeployment();
+        if (_allTimeHigh == 0) revert InvalidAmount();
+        if (_earlyExitFeeBps > 1000) revert ExitFeeTooHigh();
+        if (
+            _exitFeeRecipient == address(0) || _wstETH == address(0) || _stETH == address(0) || _priceFeed == address(0)
+        ) revert InvalidAddress();
+
         allTimeHigh = _allTimeHigh;
         earlyExitFeeBps = _earlyExitFeeBps;
         exitFeeRecipient = _exitFeeRecipient;
@@ -108,7 +128,7 @@ contract DiamondHandsVault {
     ///      If the all-time high has been reached, the full balance is returned with no fee.
     function withdraw() external {
         uint256 userWstETHBalance = wstETHbalance[msg.sender];
-        if (userWstETHBalance == 0) revert InvalidWithdawAmount();
+        if (userWstETHBalance == 0) revert InvalidWithdrawAmount();
         uint256 userAmountToReceive;
         uint256 earlyExitFeeAmount;
 
@@ -129,13 +149,16 @@ contract DiamondHandsVault {
             IERC20(wstETH).safeTransfer(msg.sender, userAmountToReceive);
         }
 
-        emit ETHWithdrawn(msg.sender, userAmountToReceive);
+        emit ETHWithdrawn(msg.sender, userAmountToReceive, earlyExitFeeAmount);
     }
 
     /// @notice Checks the current ETH price and, if it meets or exceeds the target, unlocks fee-free withdrawals.
-    /// @dev Can be called by anyone. Once triggered, deposits are permanently disabled and withdrawals become fee-free.
+    /// @dev Can be called by anyone. Reverts if the all-time high has already been reached.
+    ///      Once triggered, deposits are permanently disabled and withdrawals become fee-free.
     /// @return newAllTimeHigh The current ETH price that met or exceeded the target.
     function notifyAllTimeHigh() external returns (uint256 newAllTimeHigh) {
+        if (allTimeHighReached) revert AllTimeHighReached();
+
         (int256 currentPrice,) = getETHPrice();
 
         if (uint256(currentPrice) < allTimeHigh) revert AllTimeHighNotReached();
@@ -160,6 +183,8 @@ contract DiamondHandsVault {
         IERC20(stETH).approve(wstETH, stETHAmount);
 
         uint256 wstETHAmount = IWstETH(wstETH).wrap(stETHAmount);
+
+        if (wstETHAmount == 0) revert InvalidDepositAmount();
 
         wstETHbalance[msg.sender] += wstETHAmount;
 

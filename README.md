@@ -15,7 +15,8 @@ A smart contract vault that locks ETH deposits until ETH/USD reaches a specified
 - **Early exit fee** — configurable penalty (basis points) for withdrawals before the price target is met
 - **Permissionless ATH trigger** — anyone can call `notifyAllTimeHigh()` to unlock fee-free withdrawals once the price target is reached
 - **One-way state transition** — once the all-time high is reached, deposits are disabled and all withdrawals become fee-free
-- **Multi-chain deployable** — all external addresses (wstETH, stETH, Chainlink feed) are passed as immutable constructor parameters, so the vault can be deployed on any chain with Lido and Chainlink support
+- **Ethereum Mainnet only** — enforced at deployment via `block.chainid` check; external addresses (wstETH, stETH, Chainlink feed) are passed as immutable constructor parameters
+- **Constructor validations** — zero-address checks on all address parameters, max early exit fee capped at 10% (1000 bps), non-zero price target required
 - **Safe token transfers** — uses OpenZeppelin's `SafeERC20` for all ERC20 interactions
 
 ## Build & Test
