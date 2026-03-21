@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
+// forgefmt: disable-start
 // ██████╗ ██╗ █████╗ ███╗   ███╗ ██████╗ ███╗   ██╗██████╗     ██╗  ██╗ █████╗ ███╗   ██╗██████╗ ███████╗
 // ██╔══██╗██║██╔══██╗████╗ ████║██╔═══██╗████╗  ██║██╔══██╗    ██║  ██║██╔══██╗████╗  ██║██╔══██╗██╔════╝
 // ██║  ██║██║███████║██╔████╔██║██║   ██║██╔██╗ ██║██║  ██║    ███████║███████║██╔██╗ ██║██║  ██║███████╗
 // ██║  ██║██║██╔══██║██║╚██╔╝██║██║   ██║██║╚██╗██║██║  ██║    ██╔══██║██╔══██║██║╚██╗██║██║  ██║╚════██║
 // ██████╔╝██║██║  ██║██║ ╚═╝ ██║╚██████╔╝██║ ╚████║██████╔╝    ██║  ██║██║  ██║██║ ╚████║██████╔╝███████║
 // ╚═════╝ ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═════╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝
+// forgefmt: disable-end
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
-import {IWstETH} from "./interfaces/IWstETH.sol";
-import {IStETH} from "./interfaces/IStETH.sol";
+import { AggregatorV3Interface } from "./interfaces/AggregatorV3Interface.sol";
+import { IWstETH } from "./interfaces/IWstETH.sol";
+import { IStETH } from "./interfaces/IStETH.sol";
 
 /// @title DiamondHandsVault
 /// @author Defied.cc
@@ -172,12 +174,13 @@ contract DiamondHandsVault {
 
     /// @notice Deposits ETH into the vault by staking it via Lido and wrapping into wstETH.
     /// @dev The `amount` parameter must equal `msg.value`. Deposits are blocked once the all-time high is reached.
-    ///      ETH is submitted to Lido for stETH shares, converted to the underlying stETH amount, then wrapped into wstETH.
+    ///      ETH is submitted to Lido for stETH shares, converted to the underlying stETH amount, then wrapped into
+    /// wstETH.
     function deposit() public payable {
         if (msg.value == 0) revert InvalidDepositAmount();
         if (allTimeHighReached) revert AllTimeHighReached();
 
-        uint256 shares = IStETH(stETH).submit{value: msg.value}(address(this));
+        uint256 shares = IStETH(stETH).submit{ value: msg.value }(address(this));
         uint256 stETHAmount = IStETH(stETH).getPooledEthByShares(shares);
 
         IERC20(stETH).approve(wstETH, stETHAmount);
