@@ -47,6 +47,12 @@ Constructor parameters:
 | `_stETH` | Lido stETH contract address |
 | `_priceFeed` | Chainlink ETH/USD price feed address |
 
+### Contract Address
+
+| Network | Address |
+|---|---|
+| Ethereum Mainnet | `0x3548A8345A37f58F232F97eB050C937fb660D514` |
+
 ### Reference Addresses (Ethereum Mainnet)
 
 | Dependency | Address |
